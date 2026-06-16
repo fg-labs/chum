@@ -1,12 +1,12 @@
 //! Composite bait quality scoring.
 //!
-//! The `bait_score` function is a two-stage product:
+//! The `bait_score` function is a three-stage product:
 //!
 //! ```text
-//! bait_score = quality_score × blast_multiplier
+//! bait_score = quality_score × blast_multiplier × mito_multiplier
 //! ```
 //!
-//! **Quality score** — weighted average of synthesis/structural metrics:
+//! **Quality score** is a weighted average of synthesis/structural metrics:
 //!
 //! | Component           | Weight | Formula                                             |
 //! |---------------------|-------:|-----------------------------------------------------|
@@ -15,7 +15,7 @@
 //! | Secondary structure |      1 | 1.0 if MFE ≥ −9; quadratic decay to 0.0 at −15      |
 //! | Mean mappability    |      2 | `mean_mappability` directly                         |
 //!
-//! **BLAST multiplier** — applied as a gate that can drive the final score to zero:
+//! **BLAST multiplier** is applied as a gate that can drive the final score to zero:
 //!
 //! | Sub-component              | Formula                                             |
 //! |----------------------------|-----------------------------------------------------|
@@ -26,6 +26,18 @@
 //! When BLAST is not run the multiplier is 1.0 (no penalty). A score of `None`
 //! is returned when fewer than two quality components are available and BLAST has
 //! not been run, since a single data point provides little comparative value.
+//!
+//! **Mito multiplier** penalizes a high-identity off-target hit to a mitochondrial
+//! sequence (NUMTs are a common false-positive source):
+//!
+//! | Condition                                       | Factor                                          |
+//! |-------------------------------------------------|-------------------------------------------------|
+//! | Bait or its target is on a mito chromosome      | 1.0 (no penalty)                                |
+//! | Best mito hit is also the second-best BLAST hit | 1.0 (already penalized by `blast_multiplier`)   |
+//! | Otherwise, from `mito_hit_identity`             | `1 − clamp((pct − 75) / 25, 0, 1)` (0 at 100 %) |
+//!
+//! The second condition prevents double-counting the same alignment's identity in
+//! both the BLAST and mito multipliers.
 //!
 //! ## Relationship to IDT probe scoring
 //!
@@ -129,7 +141,14 @@ pub fn bait_score(metric: &BaitMetric) -> Option<f64> {
         })
         .unwrap_or(false);
 
-    let mito_multiplier = if bait_on_mito || target_on_mito {
+    // Avoid double-counting the identity penalty: when the best mito hit IS the
+    // second-best BLAST hit, its identity was already penalized by `blast_multiplier`
+    // (via `blast_second_hit_percent`). Applying the mito penalty again would square
+    // the same factor, so skip it in that case.
+    let mito_is_second_hit = metric.mito_hit_interval.is_some()
+        && metric.mito_hit_interval == metric.blast_second_hit_interval;
+
+    let mito_multiplier = if bait_on_mito || target_on_mito || mito_is_second_hit {
         1.0
     } else {
         match metric.mito_hit_identity {

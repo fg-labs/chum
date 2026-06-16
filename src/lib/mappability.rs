@@ -7,12 +7,14 @@
 //! in memory. Callers apply scores to a metric via
 //! [`crate::metrics::apply_mappability`].
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
 use crate::intervals::Bait;
 use noodles::core::Region;
+use noodles::csi::BinningIndex;
 use noodles::tabix;
 
 /// A tabix-indexed bgzf-compressed bedGraph reader for random-access mappability lookup.
@@ -34,7 +36,13 @@ impl MappabilityReader {
         if !path.exists() {
             bail!("Mappability file not found: {}", path.display());
         }
-        let tbi = PathBuf::from(format!("{}.tbi", path.display()));
+        // Build the sibling `.tbi` path from the raw OS bytes, not the lossy
+        // `display()` string, so non-UTF-8 filenames resolve to the correct path.
+        let tbi = {
+            let mut p = path.as_os_str().to_os_string();
+            p.push(".tbi");
+            PathBuf::from(p)
+        };
         if !tbi.exists() {
             bail!(
                 "Tabix index not found: {}; run `tabix -p bed {}` to create it",
@@ -45,6 +53,26 @@ impl MappabilityReader {
         Ok(MappabilityReader {
             path: path.to_path_buf(),
         })
+    }
+
+    /// Return the set of reference (contig) names present in the tabix index.
+    ///
+    /// Used to validate bait contigs up front so a missing contig or naming mismatch
+    /// (e.g. `chr1` vs `1`) fails fast with a clear message, rather than erroring
+    /// mid-run on the first affected bait.
+    pub fn reference_names(&self) -> Result<HashSet<String>> {
+        let reader = tabix::io::indexed_reader::Builder::default()
+            .build_from_path(&self.path)
+            .with_context(|| format!("Cannot open tabix file: {}", self.path.display()))?;
+        let header = reader
+            .index()
+            .header()
+            .with_context(|| format!("Tabix index has no header: {}", self.path.display()))?;
+        Ok(header
+            .reference_sequence_names()
+            .iter()
+            .map(|name| name.to_string())
+            .collect())
     }
 
     /// Extract per-base mappability scores for a given bait interval via tabix query.

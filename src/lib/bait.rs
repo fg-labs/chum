@@ -1,6 +1,6 @@
 //! Bait evaluator — pre-loaded evaluation state and batch processing helpers.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -233,6 +233,74 @@ impl BaitEvaluator {
 
         Ok(metric)
     }
+
+    /// Validate that every located bait's contig is present in the configured
+    /// mappability and RepBase tabix indexes, failing fast with an actionable message.
+    ///
+    /// This catches a missing contig or a naming mismatch (e.g. `chr1` vs `1`) up front,
+    /// before any baits are evaluated, instead of aborting mid-run on the first affected
+    /// bait with a low-level tabix error. Unlocated (FASTA) baits are skipped here; their
+    /// coordinates are resolved later from the BLAST top hit.
+    pub(crate) fn validate_bait_contigs(&self, baits: &[Bait]) -> Result<()> {
+        if self.mappability.is_none() && self.repbase.is_none() {
+            return Ok(());
+        }
+        let mut contigs: Vec<&str> = baits
+            .iter()
+            .filter(|b| b.is_located())
+            .map(|b| b.chrom.as_str())
+            .collect();
+        contigs.sort_unstable();
+        contigs.dedup();
+        if contigs.is_empty() {
+            return Ok(());
+        }
+
+        let missing_in = |names: &HashSet<String>| -> Vec<String> {
+            contigs
+                .iter()
+                .copied()
+                .filter(|c| !names.contains(*c))
+                .map(|c| c.to_string())
+                .collect()
+        };
+
+        if let Some(mi) = &self.mappability {
+            let missing = missing_in(&mi.reference_names()?);
+            if !missing.is_empty() {
+                bail!(
+                    "bait contig(s) not present in the mappability index{}: {}. \
+                     Check that contig names match the index (e.g. `chr1` vs `1`) and that \
+                     the index covers every bait contig.",
+                    self.config
+                        .mappability
+                        .as_ref()
+                        .map(|p| format!(" ({})", p.display()))
+                        .unwrap_or_default(),
+                    missing.join(", "),
+                );
+            }
+        }
+
+        if let Some(rb) = &self.repbase {
+            let missing = missing_in(&rb.reference_names()?);
+            if !missing.is_empty() {
+                bail!(
+                    "bait contig(s) not present in the RepBase index{}: {}. \
+                     Check that contig names match the index (e.g. `chr1` vs `1`) and that \
+                     the index covers every bait contig.",
+                    self.config
+                        .rep_base
+                        .as_ref()
+                        .map(|p| format!(" ({})", p.display()))
+                        .unwrap_or_default(),
+                    missing.join(", "),
+                );
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Populate BLAST fields for a batch of baits in one subprocess call and recompute scores.
@@ -268,23 +336,25 @@ pub(crate) fn apply_blast_to_batch(
         if !bait.is_located()
             && let Some(proxy) = bait_from_top_hit(metric)
         {
+            // Consistent with the located-bait path and up-front validation: a missing
+            // contig is raised, not silently swallowed.
             if let Some(ref rb) = evaluator.repbase {
-                match rb.overlapping_features(&proxy) {
-                    Ok(features) => metrics::apply_repbase(metric, features),
-                    Err(e) => warn!(
-                        "RepBase query failed for top-hit proxy {}: {e}",
+                let features = rb.overlapping_features(&proxy).with_context(|| {
+                    format!(
+                        "RepBase lookup failed for BLAST top-hit contig '{}'",
                         proxy.chrom
-                    ),
-                }
+                    )
+                })?;
+                metrics::apply_repbase(metric, features);
             }
             if let Some(ref mi) = evaluator.mappability {
-                match mi.scores_for_bait(&proxy) {
-                    Ok(scores) => metrics::apply_mappability(metric, &scores),
-                    Err(e) => warn!(
-                        "Mappability query failed for top-hit proxy {}: {e}",
+                let scores = mi.scores_for_bait(&proxy).with_context(|| {
+                    format!(
+                        "mappability lookup failed for BLAST top-hit contig '{}'",
                         proxy.chrom
-                    ),
-                }
+                    )
+                })?;
+                metrics::apply_mappability(metric, &scores);
             }
             // Store the proxy so mod.rs can use it for target-centering without
             // re-parsing the blast_top_hit_interval string.
@@ -353,7 +423,12 @@ pub(crate) fn load_sequences_from_fasta(
                 // Probes on the minus strand hybridize to the forward strand;
                 // the probe sequence itself is the reverse complement.
                 bait.sequence = Some(if bait.strand == Some('-') {
-                    sequence::reverse_complement(&seq)
+                    sequence::reverse_complement(&seq).with_context(|| {
+                        format!(
+                            "Cannot reverse-complement sequence for bait '{}'",
+                            bait.name
+                        )
+                    })?
                 } else {
                     seq
                 });
@@ -884,7 +959,7 @@ mod tests {
         let reverse_seq = rev[0].sequence.as_deref().expect("reverse seq");
         assert_eq!(
             reverse_seq,
-            crate::sequence::reverse_complement(forward_seq)
+            crate::sequence::reverse_complement(forward_seq).unwrap()
         );
     }
 
@@ -918,6 +993,53 @@ mod tests {
             "BaitEvaluator::new with mappability failed: {:?}",
             result.unwrap_err()
         );
+    }
+
+    #[test]
+    fn test_validate_bait_contigs_missing_contig_errors() {
+        // The mappability fixture covers only chr1; a bait on chr2 must fail validation.
+        let mut config = minimal_config();
+        config.mappability = Some(mappability_fixture());
+        let evaluator = BaitEvaluator::new(config).unwrap();
+        let baits = vec![Bait::new("chr2", 0, 100, "b")];
+        let result = evaluator.validate_bait_contigs(&baits);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("chr2"),
+            "error should name the missing contig, got: {msg}"
+        );
+        assert!(
+            msg.contains("mappability"),
+            "error should mention the mappability index, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_validate_bait_contigs_present_contig_ok() {
+        let mut config = minimal_config();
+        config.mappability = Some(mappability_fixture());
+        let evaluator = BaitEvaluator::new(config).unwrap();
+        let baits = vec![Bait::new("chr1", 0, 100, "b")];
+        assert!(evaluator.validate_bait_contigs(&baits).is_ok());
+    }
+
+    #[test]
+    fn test_validate_bait_contigs_skips_unlocated_baits() {
+        // Unlocated (FASTA) baits have chrom "unknown" and are resolved later from BLAST;
+        // they must not trip up-front validation.
+        let mut config = minimal_config();
+        config.mappability = Some(mappability_fixture());
+        let evaluator = BaitEvaluator::new(config).unwrap();
+        let baits = vec![Bait::new("unknown", 0, 100, "b")];
+        assert!(evaluator.validate_bait_contigs(&baits).is_ok());
+    }
+
+    #[test]
+    fn test_validate_bait_contigs_no_index_is_ok() {
+        let evaluator = BaitEvaluator::new(minimal_config()).unwrap();
+        let baits = vec![Bait::new("whatever", 0, 100, "b")];
+        assert!(evaluator.validate_bait_contigs(&baits).is_ok());
     }
 
     #[test]
@@ -1094,7 +1216,7 @@ mod tests {
         skip_if_missing!("blastn");
         let runner = blast_runner_fixture();
         let evaluator = BaitEvaluator::new(minimal_config()).unwrap();
-        let rc_seq = crate::sequence::reverse_complement(TEST_SEQ_60);
+        let rc_seq = crate::sequence::reverse_complement(TEST_SEQ_60).unwrap();
         let len = rc_seq.len() as u64;
         // RC of the forward sequence should align on the minus strand (sstart > send).
         let bait = Bait::with_sequence("test-contig", 0, len, "b0", rc_seq);

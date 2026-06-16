@@ -273,6 +273,14 @@ pub fn parse_interval_list_reader<R: BufRead>(mut reader: R) -> Result<Vec<Bait>
                 lineno + 1
             );
         }
+        if start_1 > end_1 {
+            bail!(
+                "Interval List line {}: start ({}) > end ({})",
+                lineno + 1,
+                start_1,
+                end_1
+            );
+        }
         let start = start_1 - 1;
         let end = end_1;
         let strand = fields[3]
@@ -866,6 +874,22 @@ mod tests {
         let input = "@HD\tVN:1.6\nchr1\t0\t10\t+\tbait\n";
         let result = parse_interval_list_reader(Cursor::new(input));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_interval_list_error_on_start_greater_than_end() {
+        // Mirrors the BED parser's start > end guard so inverted coordinates are
+        // rejected at parse time instead of underflowing downstream.
+        let input = "@HD\tVN:1.6\nchr1\t200\t100\t+\tbad\n";
+        let result = parse_interval_list_reader(Cursor::new(input));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("start (200) > end (100)"),
+            "error should report the inverted coordinates"
+        );
     }
 
     #[test]

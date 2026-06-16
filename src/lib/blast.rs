@@ -69,11 +69,13 @@ impl BlastRunner {
 
     /// Align a batch of bait sequences against the database.
     ///
-    /// Each sequence is identified in the output by its base64-encoded `"{seq}-{i}"` tag
-    /// so that special characters in bait names cannot corrupt the FASTA format, and
-    /// duplicate sequences at different positions remain uniquely addressable. The query FASTA
-    /// is streamed to `blastn` via stdin and hits are read from stdout, avoiding temporary
-    /// files entirely.
+    /// Each sequence is written to the query FASTA under its zero-based batch index
+    /// (`>{i}`) rather than its bait name. Using the index as the identifier avoids
+    /// collisions between baits that share a name (or have no name at all) and keeps
+    /// every query uniquely addressable regardless of name or sequence content; hits are
+    /// routed back to the originating bait by parsing `qseqid` as that index. The query
+    /// FASTA is streamed to `blastn` via stdin and hits are read from stdout, avoiding
+    /// temporary files entirely.
     ///
     /// Returns one `Vec<BlastHitFormat6>` per input bait, in the same order.
     pub fn align_batch(&self, baits: &[Bait]) -> Result<Vec<Vec<BlastHitFormat6>>> {
@@ -105,7 +107,8 @@ impl BlastRunner {
             .arg("-num_threads")
             .arg(self.num_threads.to_string())
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped());
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         if let Some(db_path) = &self.db_path {
             cmd.env("BLASTDB", db_path);
@@ -123,14 +126,27 @@ impl BlastRunner {
         let output = child
             .wait_with_output()
             .with_context(|| "Failed to wait for `blastn`")?;
-        writer
-            .join()
-            .unwrap()
-            .with_context(|| "Failed to write query to blastn stdin")?;
+        // Capture the writer result but do not propagate it yet: if blastn exited early
+        // (e.g. the database was not found) it closes stdin, so the writer sees a benign
+        // BrokenPipe. The real cause is the non-zero exit status, so report that first
+        // and surface blastn's own stderr message.
+        let write_result = writer.join().unwrap();
 
         if !output.status.success() {
-            bail!("blastn exited with non-zero status: {}", output.status);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr = stderr.trim();
+            if stderr.is_empty() {
+                bail!("blastn exited with non-zero status: {}", output.status);
+            } else {
+                bail!(
+                    "blastn exited with non-zero status: {}\n{}",
+                    output.status,
+                    stderr
+                );
+            }
         }
+
+        write_result.with_context(|| "Failed to write query to blastn stdin")?;
 
         // Parse format-6 output from stdout bytes.
         let mut hits_by_index: std::collections::HashMap<usize, Vec<BlastHitFormat6>> =
