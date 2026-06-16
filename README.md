@@ -2,8 +2,8 @@
 
 [![Install with bioconda](https://img.shields.io/badge/Install%20with-bioconda-brightgreen.svg)](http://bioconda.github.io/recipes/chum/README.html)
 [![Anaconda Version](https://anaconda.org/bioconda/chum/badges/version.svg)](http://bioconda.github.io/recipes/chum/README.html)
-[![Build Status](https://github.com/clintval/chum/actions/workflows/rust.yml/badge.svg?branch=main)](https://github.com/clintval/chum/actions/workflows/rust.yml?query=branch%3Amain)
-[![Coverage Status](https://coveralls.io/repos/github/clintval/chum/badge.svg?branch=main)](https://coveralls.io/github/clintval/chum?branch=main)
+[![Build Status](https://github.com/fg-labs/chum/actions/workflows/rust.yml/badge.svg?branch=main)](https://github.com/fg-labs/chum/actions/workflows/rust.yml?query=branch%3Amain)
+[![Coverage Status](https://coveralls.io/repos/github/fg-labs/chum/badge.svg?branch=main)](https://coveralls.io/github/fg-labs/chum?branch=main)
 [![Language](https://img.shields.io/badge/language-rust-dea588.svg)](https://www.rust-lang.org/)
 
 Evaluate the effectiveness of baits in a hybrid selection panel.
