@@ -87,6 +87,10 @@ pub fn run_score(args: ScoreRunArgs) -> Result<()> {
         bail!("`--targets` and `--per-target` must both be provided or both omitted");
     }
 
+    if args.batch_size == 0 {
+        bail!("`--batch-size` must be greater than 0");
+    }
+
     let optional_files: &[(&str, Option<&PathBuf>)] = &[
         ("--ref", args.reference.as_ref()),
         ("--targets", args.targets.as_ref()),
@@ -156,11 +160,15 @@ pub fn run_score(args: ScoreRunArgs) -> Result<()> {
             "BLAST concurrency: {} worker thread(s) × {} blastn thread(s) = up to {} total BLAST threads",
             args.threads,
             args.blast_threads,
-            args.threads * args.blast_threads
+            args.threads.saturating_mul(args.blast_threads)
         );
     }
 
     let evaluator = BaitEvaluator::new(config)?;
+
+    // Fail fast if any located bait sits on a contig the mappability/RepBase indexes
+    // don't cover, rather than aborting mid-run on the first affected bait.
+    evaluator.validate_bait_contigs(&baits)?;
 
     let progress = ProgLogBuilder::new()
         .name("main")
@@ -322,6 +330,21 @@ mod tests {
         let args = make_args(PathBuf::from("/nonexistent/baits.bed"));
         let result = run_score(args);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_run_score_batch_size_zero_errors() {
+        // `--batch-size 0` must be rejected cleanly, not panic in slice::chunks(0).
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "chr1\t0\t100\tbait1").unwrap();
+        let mut args = make_args(f.path().to_path_buf());
+        args.batch_size = 0;
+        let result = run_score(args);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("batch-size"),
+            "error should mention --batch-size"
+        );
     }
 
     #[test]

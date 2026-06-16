@@ -54,7 +54,8 @@ pub struct BaitMetric {
     #[serde(serialize_with = "serialize_option")]
     pub strand: Option<String>,
 
-    /// Fraction of G+C bases in the sequence (excludes N/masked bases).
+    /// Fraction of G+C bases in the sequence. `N` and `.` are excluded from the
+    /// denominator; lowercase soft-masked bases are case-folded and counted.
     #[serde(serialize_with = "serialize_option")]
     pub gc_content: Option<f64>,
 
@@ -209,7 +210,7 @@ pub fn apply_blast_hits(metric: &mut BaitMetric, bait: &Bait, hits: &[BlastHitFo
 
     if let Some(top) = hits.first() {
         let top_chrom = &top.sseqid;
-        let top_start = top.sstart.min(top.send) as u64 - 1; // to 0-based
+        let top_start = (top.sstart.min(top.send) as u64).saturating_sub(1); // to 0-based
         let top_end = top.sstart.max(top.send) as u64;
         let top_interval = format!("{}:{}-{}", top_chrom, top_start + 1, top_end);
         let matches = top_chrom == &bait.chrom && top_start == bait.start && top_end == bait.end;
@@ -231,7 +232,7 @@ pub fn apply_blast_hits(metric: &mut BaitMetric, bait: &Bait, hits: &[BlastHitFo
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
     if let Some(mito) = best_mito {
-        let m_start = mito.sstart.min(mito.send) as u64 - 1;
+        let m_start = (mito.sstart.min(mito.send) as u64).saturating_sub(1);
         let m_end = mito.sstart.max(mito.send) as u64;
         metric.mito_hit_interval = Some(format!("{}:{}-{}", mito.sseqid, m_start + 1, m_end));
         metric.mito_hit_e_value = Some(mito.evalue);
@@ -239,7 +240,7 @@ pub fn apply_blast_hits(metric: &mut BaitMetric, bait: &Bait, hits: &[BlastHitFo
     }
 
     if let Some(second) = hits.get(1) {
-        let s_start = second.sstart.min(second.send) as u64 - 1;
+        let s_start = (second.sstart.min(second.send) as u64).saturating_sub(1);
         let s_end = second.sstart.max(second.send) as u64;
         metric.blast_second_hit_interval =
             Some(format!("{}:{}-{}", second.sseqid, s_start + 1, s_end));

@@ -1,24 +1,37 @@
 //! Sequence-based bait metrics computed directly from the nucleotide string.
 
+use anyhow::{Context, Result};
+
 /// Return the reverse complement of a DNA sequence (case-preserving, IUPAC-aware).
 ///
 /// Delegates to [`bio::alphabets::dna::revcomp`]. All standard IUPAC ambiguity codes
 /// (R, Y, S, W, K, M, B, D, H, V, N) and their lowercase counterparts are complemented
-/// correctly with casing preserved. Unrecognized characters are passed through unchanged.
+/// correctly with casing preserved. Unrecognized ASCII characters are passed through
+/// unchanged.
+///
+/// `bio::alphabets::dna::revcomp` works on raw bytes and reverses them, so a multi-byte
+/// (non-ASCII) input would reverse into an invalid UTF-8 byte sequence. Rather than
+/// panic, this returns an `Err` in that case. DNA sequences are ASCII, so it never
+/// fails for them.
 ///
 /// # Examples
 /// ```
 /// use chumlib::sequence::reverse_complement;
-/// assert_eq!(reverse_complement("ACGT"), "ACGT");
-/// assert_eq!(reverse_complement("AAACCC"), "GGGTTT");
-/// assert_eq!(reverse_complement("acgt"), "acgt");
+/// assert_eq!(reverse_complement("ACGT").unwrap(), "ACGT");
+/// assert_eq!(reverse_complement("AAACCC").unwrap(), "GGGTTT");
+/// assert_eq!(reverse_complement("acgt").unwrap(), "acgt");
 /// ```
-pub fn reverse_complement(seq: &str) -> String {
-    String::from_utf8(bio::alphabets::dna::revcomp(seq.as_bytes()))
-        .expect("bio::alphabets::dna::revcomp produced non-UTF-8")
+pub fn reverse_complement(seq: &str) -> Result<String> {
+    String::from_utf8(bio::alphabets::dna::revcomp(seq.as_bytes())).with_context(|| {
+        "reverse complement produced non-UTF-8 output; the sequence contains non-ASCII bytes"
+    })
 }
 
-/// Compute GC content as a fraction, excluding N and masked bases from the denominator.
+/// Compute GC content as a fraction.
+///
+/// `N` and `.` (no-call / gap) bases are excluded from the denominator. Lowercase
+/// soft-masked bases are case-folded and counted like their uppercase forms; they are
+/// **not** excluded (despite being "masked" in the sense of [`masked_bases`]).
 ///
 /// # Examples
 /// ```
@@ -58,6 +71,9 @@ pub fn masked_bases(seq: &str) -> u32 {
 
 /// Count the number of maximal homopolymer runs of length ≥ `min_len` (case-insensitive).
 ///
+/// Only runs of the four nucleotides A/C/G/T are counted. Runs of `N`, `.`, gaps, or
+/// any other character are not homopolymers and are ignored (they still break a run).
+///
 /// # Examples
 /// ```
 /// use chumlib::sequence::count_homopolymers_min;
@@ -65,6 +81,8 @@ pub fn masked_bases(seq: &str) -> u32 {
 /// assert_eq!(count_homopolymers_min("ACGTTTTCAAAA", 3), 2);
 /// assert_eq!(count_homopolymers_min("ACGT", 3), 0);
 /// assert_eq!(count_homopolymers_min("AAACCC", 3), 2);
+/// // A run of N is not a homopolymer.
+/// assert_eq!(count_homopolymers_min("ACNNNNNGT", 3), 0);
 /// ```
 pub fn count_homopolymers_min(seq: &str, min_len: usize) -> u32 {
     if seq.is_empty() {
@@ -79,7 +97,7 @@ pub fn count_homopolymers_min(seq: &str, min_len: usize) -> u32 {
         while j < chars.len() && chars[j] == c {
             j += 1;
         }
-        if j - i >= min_len {
+        if matches!(c, 'A' | 'C' | 'G' | 'T') && j - i >= min_len {
             count += 1;
         }
         i = j;
@@ -110,9 +128,11 @@ pub fn is_mito_chrom(name: &str) -> bool {
         || name.to_ascii_lowercase().contains("mitochon")
 }
 
-/// Return the length of the longest homopolymer run (case-insensitive).
+/// Return the length of the longest homopolymer run of A/C/G/T (case-insensitive).
 ///
-/// Returns 0 for empty sequences and 1 when no consecutive identical characters exist.
+/// Runs of `N`, `.`, gaps, or any non-nucleotide character are not homopolymers and are
+/// ignored. Returns 0 for empty sequences (or sequences with no A/C/G/T) and 1 when no
+/// two consecutive nucleotides are identical.
 ///
 /// # Examples
 /// ```
@@ -120,6 +140,8 @@ pub fn is_mito_chrom(name: &str) -> bool {
 /// assert_eq!(longest_homopolymer_size("ACGTTTTCAAAA"), 4);
 /// assert_eq!(longest_homopolymer_size("ACGT"), 1);
 /// assert_eq!(longest_homopolymer_size(""), 0);
+/// // A run of N does not count as a homopolymer.
+/// assert_eq!(longest_homopolymer_size("ACNNNNNGT"), 1);
 /// ```
 pub fn longest_homopolymer_size(seq: &str) -> u32 {
     if seq.is_empty() {
@@ -135,7 +157,7 @@ pub fn longest_homopolymer_size(seq: &str) -> u32 {
             j += 1;
         }
         let run_len = (j - i) as u32;
-        if run_len > max_run {
+        if matches!(c, 'A' | 'C' | 'G' | 'T') && run_len > max_run {
             max_run = run_len;
         }
         i = j;
@@ -310,31 +332,31 @@ mod tests {
 
     #[test]
     fn test_reverse_complement_palindrome() {
-        assert_eq!(reverse_complement("ACGT"), "ACGT");
+        assert_eq!(reverse_complement("ACGT").unwrap(), "ACGT");
     }
 
     #[test]
     fn test_reverse_complement_simple() {
-        assert_eq!(reverse_complement("AAACCC"), "GGGTTT");
+        assert_eq!(reverse_complement("AAACCC").unwrap(), "GGGTTT");
     }
 
     #[test]
     fn test_reverse_complement_preserves_case() {
         // Lowercase (repeat-masked) bases stay lowercase after complementing.
-        assert_eq!(reverse_complement("acgt"), "acgt");
+        assert_eq!(reverse_complement("acgt").unwrap(), "acgt");
         // Mixed case: reversed "AcGt" → t,G,c,A → complement a,C,g,T → "aCgT"
-        assert_eq!(reverse_complement("AcGt"), "aCgT");
+        assert_eq!(reverse_complement("AcGt").unwrap(), "aCgT");
     }
 
     #[test]
     fn test_reverse_complement_n_passthrough() {
-        assert_eq!(reverse_complement("ACNGT"), "ACNGT");
+        assert_eq!(reverse_complement("ACNGT").unwrap(), "ACNGT");
     }
 
     #[test]
     fn test_reverse_complement_homopolymer_conversion() {
         // ACAGGGG on + strand → probe on - strand is RC: CCCCTGT
-        assert_eq!(reverse_complement("ACAGGGG"), "CCCCTGT");
+        assert_eq!(reverse_complement("ACAGGGG").unwrap(), "CCCCTGT");
     }
 
     #[test]
@@ -351,5 +373,29 @@ mod tests {
     #[test]
     fn test_longest_homopolymer_whole_sequence_same() {
         assert_eq!(longest_homopolymer_size("AAAAAAA"), 7);
+    }
+
+    #[test]
+    fn test_reverse_complement_non_ascii_returns_err_not_panic() {
+        // Multi-byte UTF-8 reverses into invalid UTF-8; must return Err, not panic.
+        assert!(reverse_complement("é").is_err());
+        // The U+FFFD replacement char (what from_utf8_lossy emits for bad bytes).
+        assert!(reverse_complement("AC\u{FFFD}GT").is_err());
+    }
+
+    #[test]
+    fn test_longest_homopolymer_ignores_n_run() {
+        // A run of N is an assembly gap, not a homopolymer.
+        assert_eq!(longest_homopolymer_size("ACNNNNNGT"), 1);
+        assert_eq!(longest_homopolymer_size("NNNNN"), 0);
+        // A real homopolymer adjacent to an N run is still counted.
+        assert_eq!(longest_homopolymer_size("AAAANNNNN"), 4);
+    }
+
+    #[test]
+    fn test_count_homopolymers_ignores_n_run() {
+        assert_eq!(count_homopolymers_min("ACNNNNNGT", 3), 0);
+        // Real run plus an N run → only the real run counts.
+        assert_eq!(count_homopolymers_min("AAAANNNNN", 3), 1);
     }
 }
