@@ -5,6 +5,7 @@
 [![Build Status](https://github.com/fg-labs/chum/actions/workflows/rust.yml/badge.svg?branch=main)](https://github.com/fg-labs/chum/actions/workflows/rust.yml?query=branch%3Amain)
 [![Coverage Status](https://coveralls.io/repos/github/fg-labs/chum/badge.svg?branch=main)](https://coveralls.io/github/fg-labs/chum?branch=main)
 [![Language](https://img.shields.io/badge/language-rust-dea588.svg)](https://www.rust-lang.org/)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21445794.svg)](https://doi.org/10.5281/zenodo.21445794)
 
 Evaluate the effectiveness of baits in a hybrid selection panel.
 
