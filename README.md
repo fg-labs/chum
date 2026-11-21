@@ -1,4 +1,6 @@
-# chum
+![Banner for chum](https://raw.githubusercontent.com/fg-labs/chum/main/.github/img/chum_banner.svg)
+
+---
 
 [![Install with bioconda](https://img.shields.io/badge/Install%20with-bioconda-brightgreen.svg)](http://bioconda.github.io/recipes/chum/README.html)
 [![Anaconda Version](https://anaconda.org/bioconda/chum/badges/version.svg)](http://bioconda.github.io/recipes/chum/README.html)
@@ -7,8 +9,6 @@
 [![Language](https://img.shields.io/badge/language-rust-dea588.svg)](https://www.rust-lang.org/)
 
 Evaluate the effectiveness of baits in a hybrid selection panel.
-
-![Kauaʻi](.github/img/cover.jpg)
 
 Install with mamba, conda, or run directly with pixi:
 
